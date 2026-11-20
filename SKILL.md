@@ -1,13 +1,18 @@
 ---
 name: caption-podcast-capcut
-description: Merapikan caption/subtitle video pendek (shorts/reels) potongan podcast di proyek CapCut desktop - cek typo, ejaan dan istilah terhadap audio, pastikan semua caption tampil 1 baris, pecah caption di jeda bicara, buang filler, dan beri warna berbeda untuk narasumber vs pewawancara langsung di file proyek CapCut. Gunakan skill ini setiap kali pengguna menyebut caption, subtitle, teks otomatis, transkripsi, typo caption, caption 2 baris, warna pembicara, atau proyek/timeline CapCut untuk konten podcast mingguan, walaupun tidak menyebut "skill" — termasuk "cek caption short minggu ini", "rapikan subtitle proyek 1120", atau "pelajari revisi saya di short 1".
+description: Merapikan caption/subtitle video pendek (shorts/reels) potongan podcast di proyek CapCut desktop - cek typo, ejaan dan istilah terhadap audio, pastikan semua caption tampil 1 baris, pecah caption di jeda bicara, buang filler, dan beri warna berbeda untuk narasumber vs pewawancara langsung di file proyek CapCut. Gunakan skill ini setiap kali pengguna menyebut caption, subtitle, teks otomatis, transkripsi, typo caption, caption 2 baris, warna pembicara, proyek/timeline CapCut untuk konten podcast mingguan, text box/box reels, klik mouse, watermark, atau memotong/merender export jadi short terpisah, walaupun tidak menyebut "skill" — termasuk "kerjakan podcast minggu ini", "cek caption short minggu ini", "rapikan subtitle proyek 1120", "pasang box dan watermark", "potong export jadi 10 file", atau "pelajari revisi saya di short 1".
 ---
 
 # Caption podcast CapCut
 
-Pengguna mengunggah potongan podcast setiap minggu. Beberapa video short digabung jadi satu
-timeline CapCut, captionnya dibuat dengan transkripsi otomatis CapCut, lalu direvisi. Skill ini
-mengerjakan revisi itu langsung di file proyek CapCut supaya pengguna cukup membuka dan export.
+Pengguna mengunggah potongan podcast setiap minggu. Beberapa video short (1.mp4, 2.mp4, …)
+digabung jadi satu timeline CapCut, captionnya dibuat dengan transkripsi otomatis CapCut, lalu
+direvisi. Skill ini mengerjakan paket mingguan langsung di file proyek CapCut: gaya + revisi
+caption, text box + klik mouse di awal tiap short, watermark sepanjang tiap short, lalu memotong
+hasil export jadi satu file per short.
+
+Permintaan "kerjakan podcast minggu ini, proyek X" = seluruh paket: langkah 1–4 (caption),
+lalu 7 (box, klik, watermark). Setelah pengguna export: langkah 8 (potong).
 
 Gaya rumah (warna, penggalan, filler, ejaan) ada di `references/gaya-caption.md`. **Baca file itu
 sebelum menyusun plan.** Isinya dipelajari dari revisi final pengguna, dan revisi pengguna
@@ -110,6 +115,34 @@ Rangkum polanya ke pengguna (penggalan, pembicara yang dikoreksi, kata yang diub
 timing), terapkan ke klip yang belum final, dan perbarui `references/gaya-caption.md` dengan
 pelajaran baru yang berlaku umum (bukan contoh satu kalimat saja).
 
+### 7. Gaya, text box, klik mouse, watermark (dari template)
+Template ada di `templates/kpods.json` (gaya caption Poppins ExtraBold Italic 11 + posisi,
+box PNG ber-crop 1:1 + keyframe scale + durasi 5 dtk, klik "Mouse click 1" dari pustaka CapCut,
+watermark.mov). Semua perintah dry-run dulu, lalu `--write`; backup dulu sebelum menulis.
+```
+python3 $S restyle <proyek>                      # caption masih gaya bawaan CapCut -> gaya rumah
+python3 $S boxes <proyek> <folder-png>           # PNG ...-01.png di awal klip 1, -02 di klip 2, dst + klik mouse
+python3 $S overlay <proyek> [--file watermark.mov]   # dari detik 0 file sampai akhir tiap klip
+```
+- `restyle` dijalankan **sebelum** `apply` (batas lebar 1 baris dikalibrasi untuk gaya rumah),
+  lalu `dump` ulang karena md5 berubah.
+- Box/klik/overlay yang sudah ada di awal klip dilewati, jadi aman dijalankan ulang atau bila
+  pengguna sudah memasang contoh di klip 1.
+- `boxes` memeriksa isi PNG masih di dalam area crop template; bila PERINGATAN muncul, posisi
+  kotak di PNG baru berbeda — tanyakan ke pengguna sebelum menulis.
+- Klik mouse memakai file cache CapCut. Bila cache hilang, skrip berhenti dan meminta pengguna
+  drag "Mouse click 1" sekali dari CapCut ke proyek; skrip lalu memakai file itu.
+- Bila pengguna mengganti desain (box, durasi, animasi, watermark baru, gaya caption): minta dia
+  pasang satu contoh di klip 1, lalu `python3 $S template-save <proyek>` (opsi `--parts box,click`).
+
+### 8. Potong export jadi satu file per short
+Pengguna export **seluruh** timeline sekali dari CapCut, lalu:
+```
+python3 $S split <proyek> <export.mp4> <folder-keluar> --name "Nama Narasumber"
+```
+Hasil `<nama> - 01.mp4` … tepat di batas frame tiap klip (codec mengikuti export, bitrate
+±1,4×). Skrip menolak bila durasi export ≠ timeline, dan mencetak jumlah frame tiap file (harus OK).
+
 ## Laporan ke pengguna
 Bahasa Indonesia, ringkas, berisi:
 - Apa yang berubah (jumlah caption sebelum → sesudah per klip, contoh penggalan, typo diperbaiki).
@@ -123,3 +156,5 @@ Buat juga CSV pembicara bila pengguna ingin mengecek di spreadsheet.
   pengguna ingin, tawarkan memasang model offline (mis. sherpa-onnx) — perlu izin unduh.
 - Versi CapCut baru bisa mengubah/mengenkripsi format draft; skrip akan berhenti dengan pesan.
 - Skrip mengharapkan satu track teks dan caption satu gaya per teks.
+- Track video pertama = klip utama; overlay (box, watermark) ada di track video berikutnya.
+- CapCut tidak bisa di-export dari luar aplikasi: export selalu dilakukan pengguna.

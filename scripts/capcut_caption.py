@@ -11,6 +11,11 @@ Subperintah:
   calibrate PROJECT LINES.csv  hitung batas lebar 1 baris dari hasil `lines`, simpan ke calibration.json
   apply    PROJECT PLAN.json [--words W.json] [--write]   pecah/ubah/hapus/warnai caption
   compare  OLD.json NEW.json   bandingkan dua hasil dump (teks, pembicara, timing)
+  template-save PROJECT        simpan gaya caption, box, klik, overlay dari proyek contoh ke templates/kpods.json
+  restyle  PROJECT [--write]   pasang gaya caption dari template ke semua caption
+  boxes    PROJECT BOXDIR [--write]   box PNG -NN di awal klip ke-NN + klik mouse
+  overlay  PROJECT [--file F] [--write]   overlay video (watermark) sepanjang tiap klip
+  split    PROJECT EXPORT.mp4 OUTDIR [--name N]   potong export utuh jadi 1 file per klip
 
 PROJECT boleh nama folder proyek (mis. nama folder tanggal) atau path lengkap.
 Hanya pustaka standar Python + ffmpeg + whisper-cli.
@@ -74,8 +79,8 @@ def text_segments(d):
 def video_clips(d):
     vids = {m['id']: m for m in d['materials']['videos']}
     clips = []
-    for t in d['tracks']:
-        if t['type'] != 'video': continue
+    main = [t for t in d['tracks'] if t['type'] == 'video'][:1]   # track utama; overlay (box, watermark) diabaikan
+    for t in main:
         for s in t['segments']:
             m = vids.get(s['material_id'])
             if not m or m.get('type') != 'video': continue
@@ -465,6 +470,258 @@ def cmd_compare(a):
         import statistics as stt
         if y: print(f"   kata/caption rata {stt.mean(len(r['text'].split()) for r in y):.2f}, maks {max(len(r['text'].split()) for r in y)}")
 
+# ---------------------------------------------------------------- template aset (gaya, box, klik, overlay)
+
+TEMPLATE = os.path.join(SKILL_DIR, 'templates', 'kpods.json')
+STYLE_KEYS = ['border_color', 'border_width', 'border_alpha', 'check_flag', 'font_path', 'font_size', 'has_shadow',
+              'shadow_alpha', 'shadow_angle', 'shadow_color', 'shadow_distance', 'shadow_point', 'shadow_smoothing',
+              'use_effect_default_color']
+
+def nid(): return str(uuid.uuid4()).upper()
+
+def tilde(o):
+    """Ganti path home dengan ~ (repo publik) / kembalikan saat dipakai."""
+    s = json.dumps(o, ensure_ascii=False)
+    return json.loads(s.replace(json.dumps(HOME)[1:-1], '~'))
+
+def untilde(o):
+    def f(x):
+        if isinstance(x, str) and x.startswith('~/'): return os.path.expanduser(x)
+        if isinstance(x, dict): return {k: f(v) for k, v in x.items()}
+        if isinstance(x, list): return [f(v) for v in x]
+        return x
+    return f(o)
+
+def mat_index(d):
+    return {m['id']: (k, m) for k, v in d['materials'].items() if isinstance(v, list)
+            for m in v if isinstance(m, dict) and 'id' in m}
+
+def main_clips(d):
+    t = [t for t in d['tracks'] if t['type'] == 'video'][0]
+    return sorted(t['segments'], key=lambda s: s['target_timerange']['start'])
+
+def write_draft(P, d):
+    if P.startswith(DRAFTS) and capcut_running(): die('CapCut masih berjalan; tutup aplikasinya dulu (Cmd+Q)')
+    if os.path.exists(os.path.join(P, '.locked')): die('proyek masih terkunci (.locked); tutup proyek di CapCut')
+    hs = {f: md5(f) for f in draft_copies(P)}
+    if len(set(hs.values())) != 1: die('salinan draft tidak identik; buka-tutup proyek di CapCut lalu ulangi')
+    ids = [m['id'] for _, m in mat_index(d).values()]
+    if len(ids) != len(set(ids)): die('ada id material ganda; tidak ditulis')
+    tmp = os.path.join(P, '.caption_tmp.json')
+    json.dump(d, open(tmp, 'w'), ensure_ascii=False, separators=(',', ':'))
+    for f in hs: shutil.copyfile(tmp, f)
+    os.remove(tmp)
+    print('ditulis ke', len(hs), 'salinan draft')
+
+def pack(d, track, seg):
+    mi = mat_index(d)
+    return dict(track={k: v for k, v in track.items() if k != 'segments'}, segment=seg,
+                material=mi[seg['material_id']][1], refs=[list(mi[r]) for r in seg['extra_material_refs']])
+
+def load_template():
+    if not os.path.exists(TEMPLATE): die(f'template belum ada ({TEMPLATE}); jalankan template-save pada proyek contoh')
+    return untilde(json.load(open(TEMPLATE)))
+
+def cmd_template_save(a):
+    """Ambil gaya caption, box (PNG), klik (audio) dan overlay (video) dari proyek contoh."""
+    P = proj_path(a.project); d = load_draft(P); mi = mat_index(d); done = set()
+    try: tpl = json.load(open(TEMPLATE))
+    except Exception: tpl = {}
+    tracks = d['tracks']; vids = [t for t in tracks if t['type'] == 'video']
+    segs, mats = text_segments(d)
+    if segs and 'caption' in a.parts:
+        s0 = segs[0]; m0 = mats[s0['material_id']]; st = json.loads(m0['content'])['styles'][0]
+        tpl['caption'] = tilde(dict(material={k: m0[k] for k in STYLE_KEYS if k in m0},
+                                    style={k: v for k, v in st.items() if k not in ('range', 'fill')}, clip=s0['clip']))
+        print('caption:', os.path.basename(m0['font_path']), m0['font_size'])
+    for t in vids[1:]:
+        for s in t['segments']:
+            m = mi[s['material_id']][1]
+            if m.get('type') == 'photo' and 'box' in a.parts and 'box' not in done:
+                tpl['box'] = tilde(pack(d, t, s)); done.add('box'); print('box:', m['material_name'], s['target_timerange']['duration'] / 1e6, 'dtk')
+            if m.get('type') == 'video' and 'overlay' in a.parts and 'overlay' not in done:
+                tpl['overlay'] = tilde(pack(d, t, s)); done.add('overlay'); print('overlay:', m['material_name'])
+    for t in tracks:
+        if t['type'] != 'audio' or 'click' not in a.parts or 'click' in done: continue
+        s = t['segments'][0]; m = mi[s['material_id']][1]
+        tpl['click'] = tilde(pack(d, t, s)); done.add('click'); print('klik:', m.get('name'), s['target_timerange']['duration'] / 1e6, 'dtk')
+    os.makedirs(os.path.dirname(TEMPLATE), exist_ok=True)
+    json.dump(tpl, open(TEMPLATE, 'w'), ensure_ascii=False, indent=1)
+    print('disimpan ->', TEMPLATE)
+
+def cmd_restyle(a):
+    P = proj_path(a.project); d = load_draft(P); T = load_template().get('caption') or die('template caption tidak ada')
+    segs, mats = text_segments(d)
+    for s in segs:
+        m = mats[s['material_id']]; c = json.loads(m['content'])
+        m.update(copy.deepcopy(T['material']))
+        new = []
+        for st in c['styles']:
+            x = copy.deepcopy(T['style']); x['range'] = st['range']; x['fill'] = st['fill']; new.append(x)
+        c['styles'] = new; m['content'] = json.dumps(c, ensure_ascii=False, separators=(',', ':'))
+        s['clip'] = copy.deepcopy(T['clip'])
+    if not os.path.exists(T['material']['font_path']): print('PERINGATAN font tidak ditemukan:', T['material']['font_path'])
+    print(f"gaya {os.path.basename(T['material']['font_path'])} {T['material']['font_size']} -> {len(segs)} caption")
+    if not a.write: print('(dry-run: tambahkan --write)'); return
+    write_draft(P, d)
+
+def place(d, T, start, dur=None, src=None, material=None, before=None):
+    """Tambah satu salinan segmen template di waktu `start` (mikrodetik). Track dibuat bila belum ada."""
+    mi = mat_index(d)
+    key = T['material'].get('music_id') or os.path.basename(T['material'].get('path', ''))
+    tr = None
+    for t in d['tracks']:
+        if t['type'] != T['track']['type'] or t is main_track(d): continue
+        for s in t['segments']:
+            m = mi[s['material_id']][1]
+            if (m.get('music_id') or os.path.basename(m.get('path', ''))) == key or \
+               (T['material'].get('type') == 'photo' and m.get('type') == 'photo'):
+                tr = t; break
+        if tr: break
+    if tr is None:
+        tr = copy.deepcopy(T['track']); tr['id'] = nid(); tr['segments'] = []
+        pos = len(d['tracks'])
+        if T['track']['type'] == 'video':   # overlay video di atas caption, sebelum track audio
+            au = [i for i, t in enumerate(d['tracks']) if t['type'] == 'audio']
+            if au: pos = au[0]
+        if before:
+            for i, t in enumerate(d['tracks']):
+                if t['type'] == 'video' and any(os.path.basename(mi[s['material_id']][1].get('path', '')) == before for s in t['segments']):
+                    pos = i; break
+        d['tracks'].insert(pos, tr)
+    m = copy.deepcopy(material or T['material']); m['id'] = nid()
+    kind = 'audios' if T['track']['type'] == 'audio' else 'videos'
+    d['materials'].setdefault(kind, []).append(m)
+    s = copy.deepcopy(T['segment']); s['id'] = nid(); s['material_id'] = m['id']; refs = []
+    for k, x in T['refs']:
+        x = copy.deepcopy(x); x['id'] = nid(); d['materials'].setdefault(k, []).append(x); refs.append(x['id'])
+    s['extra_material_refs'] = refs
+    for kf in s.get('common_keyframes') or []:
+        kf['id'] = nid()
+        for x in kf['keyframe_list']: x['id'] = nid()
+    dur = dur or T['segment']['target_timerange']['duration']
+    s['target_timerange'] = {'start': int(start), 'duration': int(dur)}
+    s['source_timerange'] = {'start': T['segment']['source_timerange']['start'] if src is None else src, 'duration': int(dur)}
+    tr['segments'].append(s); tr['segments'].sort(key=lambda x: x['target_timerange']['start'])
+    return tr
+
+def main_track(d): return [t for t in d['tracks'] if t['type'] == 'video'][0]
+
+def has_at(d, T, start, tol=40000):
+    mi = mat_index(d); key = T['material'].get('music_id') or ('photo' if T['material'].get('type') == 'photo' else os.path.basename(T['material'].get('path', '')))
+    for t in d['tracks']:
+        if t is main_track(d) or t['type'] != T['track']['type']: continue
+        for s in t['segments']:
+            m = mi[s['material_id']][1]
+            k = m.get('music_id') or ('photo' if m.get('type') == 'photo' else os.path.basename(m.get('path', '')))
+            if k == key and abs(s['target_timerange']['start'] - start) < tol: return True
+    return False
+
+def alpha_bbox(png, W, H):
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', png, '-vf', 'alphaextract,format=gray', '-f', 'rawvideo', '-'],
+                         capture_output=True).stdout
+    if len(raw) != W * H: return None
+    rows = [y for y in range(H) if max(raw[y*W:(y+1)*W]) > 20]
+    if not rows: return None
+    cols = [x for x in range(W) if any(raw[y*W+x] > 20 for y in range(rows[0], rows[-1] + 1, 4))]
+    return cols[0], rows[0], cols[-1], rows[-1]
+
+def check_overlaps(d):
+    for t in d['tracks']:
+        z = sorted(t['segments'], key=lambda s: s['target_timerange']['start'])
+        for x, y in zip(z, z[1:]):
+            if x['target_timerange']['start'] + x['target_timerange']['duration'] > y['target_timerange']['start'] + 1:
+                die(f"segmen tumpang tindih di track {t['type']}; tidak ditulis")
+
+def cmd_boxes(a):
+    """Box PNG ke-k (…-01.png, …-02.png, …) di awal klip ke-k, plus klik mouse."""
+    P = proj_path(a.project); d = load_draft(P); T = load_template()
+    B = T.get('box') or die('template box tidak ada'); C = T.get('click')
+    pngs = sorted(f for f in os.listdir(a.boxdir) if re.search(r'-(\d+)\.png$', f, re.I) and not f.startswith('._'))
+    num = {int(re.search(r'-(\d+)\.png$', f, re.I).group(1)): f for f in pngs}
+    clips = main_clips(d)
+    if C and not a.no_click:
+        cpath = C['material']['path']
+        if not os.path.exists(cpath):
+            mi = mat_index(d)
+            alt = [m for _, m in mi.values() if m.get('music_id') == C['material'].get('music_id') and os.path.exists(m.get('path', ''))]
+            if alt: C = dict(C, material=alt[0])
+            else: die(f"file klik mouse tidak ada di cache CapCut ({cpath}). Drag '{C['material'].get('name')}' sekali dari CapCut ke proyek ini, simpan, tutup CapCut, lalu ulangi")
+    cw, ch = B['material']['width'], B['material']['height']; cr = B['material']['crop']
+    box_px = (cr['upper_left_x'] * cw, cr['upper_left_y'] * ch, cr['lower_right_x'] * cw, cr['lower_right_y'] * ch)
+    ov = T.get('overlay', {}).get('material', {}).get('path')
+    for i, c in enumerate(clips, 1):
+        t0 = c['target_timerange']['start']
+        f = num.get(i)
+        if not f: print(f'klip {i}: TIDAK ADA PNG -{i:02d}.png, dilewati'); continue
+        path = os.path.join(os.path.abspath(a.boxdir), f)
+        if has_at(d, B, t0): print(f'klip {i}: box sudah ada, dilewati')
+        else:
+            bb = alpha_bbox(path, cw, ch)
+            if bb is None: print(f'  PERINGATAN {f}: ukuran bukan {cw}x{ch} atau kosong')
+            elif not (bb[0] >= box_px[0] - 1 and bb[1] >= box_px[1] - 1 and bb[2] <= box_px[2] + 1 and bb[3] <= box_px[3] + 1):
+                print(f'  PERINGATAN {f}: isi PNG {bb} keluar dari area crop {tuple(round(x) for x in box_px)}; cek posisi di CapCut')
+            m = copy.deepcopy(B['material']); m['path'] = path; m['material_name'] = f
+            place(d, B, t0, material=m, before=os.path.basename(ov) if ov else None)
+            print(f'klip {i}: {f} @ {t0/1e6:.2f}s')
+        if C and not a.no_click:
+            if has_at(d, C, t0): print(f'klip {i}: klik sudah ada, dilewati')
+            else: place(d, C, t0, material=C['material'])
+    fix_render_index(d); check_overlaps(d)
+    if not a.write: print('(dry-run: tambahkan --write)'); return
+    write_draft(P, d)
+
+def cmd_overlay(a):
+    """Overlay video (mis. watermark.mov) dari detik 0 file sampai akhir setiap klip."""
+    P = proj_path(a.project); d = load_draft(P); O = load_template().get('overlay') or die('template overlay tidak ada')
+    if a.file: O = dict(O, material=dict(O['material'], path=os.path.abspath(a.file), material_name=os.path.basename(a.file)))
+    if not os.path.exists(O['material']['path']): die(f"file overlay tidak ada: {O['material']['path']}")
+    clips = main_clips(d)
+    for i, c in enumerate(clips, 1):
+        t0, dur = c['target_timerange']['start'], c['target_timerange']['duration']
+        if dur > O['material']['duration']: die(f"overlay ({O['material']['duration']/1e6:.1f} dtk) lebih pendek dari klip {i} ({dur/1e6:.1f} dtk)")
+        if has_at(d, O, t0): print(f'klip {i}: overlay sudah ada, dilewati'); continue
+        place(d, O, t0, dur=dur, src=0)
+        print(f"klip {i}: {O['material']['material_name']} {t0/1e6:.2f}-{(t0+dur)/1e6:.2f}s")
+    fix_render_index(d); check_overlaps(d)
+    if not a.write: print('(dry-run: tambahkan --write)'); return
+    write_draft(P, d)
+
+def fix_render_index(d):
+    for i, t in enumerate(d['tracks']):
+        if t['type'] in ('video', 'audio'):
+            for s in t['segments']: s['track_render_index'] = i
+
+def cmd_split(a):
+    """Potong video export utuh jadi satu file per klip, tepat di batas frame."""
+    P = proj_path(a.project); d = load_draft(P); clips = main_clips(d)
+    pr = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+                                    'stream=codec_type,codec_name,pix_fmt,r_frame_rate,bit_rate:format=duration', '-of', 'json', a.video],
+                                   capture_output=True, text=True).stdout)
+    v = [s for s in pr['streams'] if s['codec_type'] == 'video'][0]
+    n, dd = v['r_frame_rate'].split('/'); fps = int(n) / int(dd)
+    total = float(pr['format']['duration']); tl = d['duration'] / 1e6
+    if abs(total - tl) > 0.2: die(f'durasi export {total:.2f}s tidak sama dengan timeline {tl:.2f}s; export ulang seluruh timeline')
+    bounds = [round(c['target_timerange']['start'] / 1e6 * fps) for c in clips] + [round(tl * fps)]
+    tenbit = '10' in v.get('pix_fmt', '')
+    br = max(8_000_000, int(int(v.get('bit_rate') or 10_000_000) * 1.4))
+    if v['codec_name'] == 'hevc':
+        venc = ['-c:v', 'hevc_videotoolbox', '-tag:v', 'hvc1'] + (['-profile:v', 'main10', '-pix_fmt', 'p010le'] if tenbit else [])
+    else:
+        venc = ['-c:v', 'h264_videotoolbox', '-pix_fmt', 'yuv420p']
+    os.makedirs(a.outdir, exist_ok=True)
+    name = a.name or os.path.basename(P)
+    for i in range(len(clips)):
+        f0, f1 = bounds[i], bounds[i + 1]; out = os.path.join(a.outdir, f'{name} - {i+1:02d}.mp4')
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-ss', f'{f0/fps:.6f}', '-i', a.video, '-t', f'{(f1-f0)/fps:.6f}',
+                        '-frames:v', str(f1 - f0), '-map', '0:v:0', '-map', '0:a:0?'] + venc +
+                       ['-b:v', str(br), '-maxrate', str(int(br * 1.3)), '-color_primaries', 'bt709', '-color_trc', 'bt709',
+                        '-colorspace', 'bt709', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', out], check=True)
+        got = subprocess.run(['ffprobe', '-v', 'error', '-count_frames', '-select_streams', 'v:0', '-show_entries',
+                              'stream=nb_read_frames', '-of', 'csv=p=0', out], capture_output=True, text=True).stdout.strip()
+        ok = 'OK' if got == str(f1 - f0) else f'BEDA (harus {f1-f0})'
+        print(f'{out}  {(f1-f0)/fps:.2f}s  {got} frame {ok}')
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest='cmd', required=True)
@@ -478,6 +735,13 @@ def main():
     p = sp.add_parser('calibrate'); p.add_argument('project'); p.add_argument('lines'); p.set_defaults(f=cmd_calibrate)
     p = sp.add_parser('apply'); p.add_argument('project'); p.add_argument('plan'); p.add_argument('--words'); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_apply)
     p = sp.add_parser('compare'); p.add_argument('old'); p.add_argument('new'); p.set_defaults(f=cmd_compare)
+    p = sp.add_parser('template-save'); p.add_argument('project')
+    p.add_argument('--parts', default='caption,box,click,overlay', type=lambda x: x.split(',')); p.set_defaults(f=cmd_template_save)
+    p = sp.add_parser('restyle'); p.add_argument('project'); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_restyle)
+    p = sp.add_parser('boxes'); p.add_argument('project'); p.add_argument('boxdir'); p.add_argument('--no-click', action='store_true')
+    p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_boxes)
+    p = sp.add_parser('overlay'); p.add_argument('project'); p.add_argument('--file'); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_overlay)
+    p = sp.add_parser('split'); p.add_argument('project'); p.add_argument('video'); p.add_argument('outdir'); p.add_argument('--name'); p.set_defaults(f=cmd_split)
     a = ap.parse_args(); a.f(a)
 
 if __name__ == '__main__':
