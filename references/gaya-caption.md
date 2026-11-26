@@ -41,6 +41,14 @@ lain di minggu berikutnya, revisi terbaru yang dipakai: perbarui file ini dengan
   kata yang terlewat oleh transkripsi otomatis ditambahkan.
 - "nafas" dibiarkan (pengguna tidak mengubahnya).
 
+## Nama orang
+- Host podcast bernama **Tania**; narasumber menyapanya "kak Tania". Transkripsi otomatis sering
+  salah dengar jadi "kata nia", "katanya", "kak nia" — periksa konteksnya (sapaan ke host di
+  awal/akhir kalimat narasumber), jangan ganti "katanya" yang memang berarti "katanya".
+- Nama narasumber diambil dari nama proyek ("Shorts <Nama>") dan ditulis "kak <Nama>";
+  transkripsi sering memotong huruf awal (mis. "samara" untuk Tsamara). Bila ejaan nama di
+  nama proyek dan nama folder episode berbeda, tanyakan ke pengguna.
+
 ## Menentukan pembicara (pelajaran)
 Tebakan dari isi ucapan paling sering meleset di sahutan pendek dan pergantian cepat:
 - Komentar singkat di tengah pertanyaan host bisa jadi milik narasumber, begitu juga jawaban
