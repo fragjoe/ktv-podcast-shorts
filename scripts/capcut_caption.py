@@ -20,7 +20,8 @@ Subperintah:
 PROJECT boleh nama folder proyek (mis. nama folder tanggal) atau path lengkap.
 Hanya pustaka standar Python + ffmpeg + whisper-cli.
 """
-import argparse, copy, csv, difflib, hashlib, json, os, re, shutil, struct, subprocess, sys, tempfile, uuid, zipfile
+from collections import Counter
+import argparse, copy, csv, difflib, itertools, hashlib, json, os, re, shutil, struct, subprocess, sys, tempfile, uuid, zipfile
 
 HOME = os.path.expanduser('~')
 DRAFTS = os.path.join(HOME, 'Movies/CapCut/User Data/Projects/com.lveditor.draft')
@@ -700,58 +701,131 @@ def stream_pcm(path, i, src, dur):
     import array
     return array.array('h', raw[:len(raw) // 2 * 2])
 
-def cmd_mics(a):
-    """Kenali track audio per mic (narasumber/host/gabungan) dan cek warna caption terhadap mic yang paling keras."""
-    import math, statistics
-    P = proj_path(a.project); d = load_draft(P); clips = main_clips(d); mi = mat_index(d)
-    segs, mats = text_segments(d); colors = {v: k for k, v in DEFAULT_COLORS.items()}; caps = []
-    for i, sg in enumerate(segs, 1):
-        c = json.loads(mats[sg['material_id']]['content']); st = sg['target_timerange']['start'] / 1e6
-        caps.append(dict(idx=i, start=st, end=st + sg['target_timerange']['duration'] / 1e6, text=c['text'],
-                         speaker=colors.get(rgb2hex(c['styles'][0]['fill']['content']['solid']['color']), '?')))
-    names = None; E = []  # (caption, [rms per stream])
-    for k, c in enumerate(clips, 1):
+MIC_FRAME = 0.05   # detik per jendela analisis
+
+def mic_frames(d):
+    """Energi tiap track audio per 50 ms di seluruh timeline: (nama track, [(t, [rms...])])."""
+    import math
+    mi = mat_index(d); names = None; fr = []; n = int(8000 * MIC_FRAME)
+    for k, c in enumerate(main_clips(d), 1):
         path = mi[c['material_id']][1]['path']; st = audio_streams(path)
         if names is None: names = st
         if len(st) != len(names): die(f'klip {k} punya {len(st)} track audio, klip 1 punya {len(names)}')
         if len(st) < 2: die(f'klip {k} hanya punya {len(st)} track audio; tidak bisa dipisah per mic')
         src, t0, dur = c['source_timerange']['start'] / 1e6, c['target_timerange']['start'] / 1e6, c['target_timerange']['duration'] / 1e6
         pcm = [stream_pcm(path, i, src, dur) for i in range(len(st))]
-        for cap in caps:
-            if not (t0 <= cap['start'] < t0 + dur): continue
-            s0, s1 = int((cap['start'] - t0) * 8000), int((cap['end'] - t0) * 8000)
-            r = []
-            for x in pcm:
-                seg = x[s0:s1:2] or [0]
-                r.append(math.sqrt(sum(v * v for v in seg) / len(seg)))
-            E.append((cap, r))
-    n = len(names)
+        L = min(map(len, pcm))
+        for s in range(0, L - n, n):
+            fr.append((t0 + s / 8000, [math.sqrt(sum(v * v for v in x[s:s + n:2]) / (n // 2)) for x in pcm]))
+    return names, fr
+
+def env_corr(p, q):
+    import math
+    mp, mq = sum(p) / len(p), sum(q) / len(q)
+    num = sum((x - mp) * (y - mq) for x, y in zip(p, q))
+    den = math.sqrt(sum((x - mp) ** 2 for x in p) * sum((y - mq) ** 2 for y in q)) or 1
+    return num / den
+
+def cmd_mics(a):
+    """Kenali track mic narasumber/host/gabungan dari isi suara, lalu cek warna & titik pecah caption."""
+    import math, statistics, bisect
+    P = proj_path(a.project); d = load_draft(P)
+    segs, mats = text_segments(d); colors = {v: k for k, v in DEFAULT_COLORS.items()}; caps = []
+    for i, sg in enumerate(segs, 1):
+        c = json.loads(mats[sg['material_id']]['content']); st = sg['target_timerange']['start'] / 1e6
+        caps.append(dict(idx=i, start=st, end=st + sg['target_timerange']['duration'] / 1e6, text=c['text'],
+                         speaker=colors.get(rgb2hex(c['styles'][0]['fill']['content']['solid']['color']), '?')))
+    names, fr = mic_frames(d); n = len(names); T = [t for t, _ in fr]
     print('track audio di sumber:', ', '.join(f'{i+1}={nm}' for i, nm in enumerate(names)))
-    if n > 3 and not a.mix: die('lebih dari 3 track audio: tanyakan ke pengguna track mana untuk render, lalu ulangi dengan --mix N')
+    if n > 3 and not a.mix: die('lebih dari 3 track audio: tanyakan ke pengguna track mana yang gabungan (render), lalu --mix N')
     db = lambda p, q: 20 * math.log10((p + 1) / (q + 1))
-    # skor tiap track: seberapa jauh lebih keras saat caption A dibanding saat caption B
-    score = []
-    for i in range(n):
-        A = [r[i] for c, r in E if c['speaker'] == 'A'] or [0]; B = [r[i] for c, r in E if c['speaker'] == 'B'] or [0]
-        score.append(db(statistics.median(A), statistics.median(B)))
-    na, ho = max(range(n), key=lambda i: score[i]), min(range(n), key=lambda i: score[i])
-    rest = [i for i in range(n) if i not in (na, ho)]
-    mix = a.mix - 1 if a.mix else (rest[0] if len(rest) == 1 else None)
+    # 1. track gabungan = yang paling mirip jumlah track lain (tidak dipakai menentukan pembicara)
+    env = [[r[i] for _, r in fr] for i in range(n)]
+    if a.mix: mix = a.mix - 1
+    elif n == 3:
+        mix = max(range(3), key=lambda i: env_corr(env[i], [sum(env[j][k] for j in range(3) if j != i) for k in range(len(fr))]))
+    else: mix = None
+    mics = [i for i in range(n) if i != mix]
+    if len(mics) != 2: die(f'butuh tepat 2 track mic, ketemu {len(mics)}; tanyakan ke pengguna susunan tracknya')
+    # 2. narasumber = mic yang paling lama dominan (tamu bicara paling banyak); cek silang dengan warna caption
+    loud = [max(r[i] for i in mics) for _, r in fr]
+    thr = max(150, 0.25 * statistics.median(sorted(loud)[len(loud) // 2:]))
+    dom = [0, 0]
+    for _, r in fr:
+        x = db(r[mics[0]], r[mics[1]])
+        if max(r[mics[0]], r[mics[1]]) > thr and abs(x) > a.db: dom[0 if x > 0 else 1] += 1
+    na, ho = (mics[0], mics[1]) if dom[0] >= dom[1] else (mics[1], mics[0])
+    # titik tengah: mic host bisa lebih banyak menangkap suara narasumber (atau sebaliknya), jadi
+    # selisih dB tidak simetris di 0. Cari dua kelompok (2-means) dan pakai tengahnya.
+    xs = sorted(db(r[na], r[ho]) for _, r in fr if max(r[na], r[ho]) > thr)
+    lo, hi = xs[len(xs) // 10], xs[-len(xs) // 10]
+    for _ in range(20):
+        mid = (lo + hi) / 2; L_ = [x for x in xs if x < mid]; H_ = [x for x in xs if x >= mid]
+        if not L_ or not H_: break
+        lo, hi = statistics.median(L_), statistics.median(H_)
+    mid = (lo + hi) / 2
+    print(f'  pusat narasumber {hi:+.0f} dB, host {lo:+.0f} dB -> batas {mid:+.0f} dB')
+    dbm = lambda p, q: db(p, q) - mid
+    def lab(r):
+        if max(r[na], r[ho]) <= thr: return '-'
+        x = db(r[na], r[ho]); return 'A' if x > a.db else 'B' if x < -a.db else '-'
+    def frames(c): return fr[bisect.bisect_left(T, c['start']):bisect.bisect_left(T, c['end'])]
+    sp = Counter(c['speaker'] for c in caps)
+    if sp['A'] and sp['B']:   # cek silang: warna caption saat ini harus searah dengan mic
+        agree = sum(1 for c in caps for _, r in frames(c) if lab(r) == c['speaker'])
+        swap = sum(1 for c in caps for _, r in frames(c) if lab(r) not in ('-', c['speaker']))
+        if swap > agree:
+            print('  PERINGATAN: warna caption lebih cocok bila mic ditukar; tanyakan ke pengguna siapa di track mana')
     print(f'narasumber (A) = track {na+1} "{names[na]}" | host (B) = track {ho+1} "{names[ho]}"'
           + (f' | gabungan untuk render = track {mix+1} "{names[mix]}"' if mix is not None else ''))
-    for i, nm in ((na, 'narasumber'), (ho, 'host')):
-        if nm[0] != names[i][0].lower() and names[i][0].lower() in 'hn': print(f'  catatan: label "{names[i]}" di file tidak sesuai isi (terdengar {nm})')
-    rows = []
-    for c, r in E:
-        x = db(r[na], r[ho]); mic = 'A' if x > a.db else 'B' if x < -a.db else '?'
-        if mic != '?' and mic != c['speaker']: rows.append((c, mic, x))
-    print(f'caption: {len(E)} | warna beda dengan mic (selisih > {a.db:g} dB): {len(rows)}')
-    for c, mic, x in rows:
-        print(f"  #{c['idx']} {int(c['start']//60)}:{c['start']%60:05.2f} {c['speaker']}->{mic} ({x:+.0f} dB) {c['text']}")
+    for i, who in ((na, 'narasumber'), (ho, 'host')):
+        if names[i][:1].lower() in 'hn' and names[i][:1].lower() != who[0]:
+            print(f'  catatan: label "{names[i]}" di file tidak sesuai isi (terdengar {who})')
+    # 3. per caption: warna dari mic, titik pecah, dan daftar QC
+    fix, split, doubt = [], [], []
+    for c in caps:
+        fs = [(t, r) for t, r in frames(c)]
+        # "beda" hanya bila tegas dengan selisih mentah (tanpa pergeseran tengah): tidak ada alarm palsu
+        # pada revisi pengguna. Selisih terhadap titik tengah dipakai untuk daftar "perlu dicek".
+        voiced = [(db(r[na], r[ho]), dbm(r[na], r[ho])) for _, r in fs if max(r[na], r[ho]) > thr]
+        m = statistics.median(x for x, _ in voiced) if voiced else 0
+        mm = statistics.median(y for _, y in voiced) if voiced else 0
+        v = 'A' if m > a.db else 'B' if m < -a.db else '?'
+        vm = 'A' if mm > a.db / 2 else 'B' if mm < -a.db / 2 else '?'
+        if v != '?' and v != c['speaker']: fix.append((c, v, m))
+        elif vm != c['speaker']: doubt.append((c, mm))
+        seq = ''.join(lab(r) for _, r in fs).replace('-', '')
+        # suara dua pembicara berurutan di dalam satu caption -> saran pecah
+        runs = [(ch, len(list(g))) for ch, g in itertools.groupby(seq)]
+        runs = [x for x in runs if x[1] * MIC_FRAME >= 0.15]
+        if len(runs) >= 2 and len({x[0] for x in runs}) == 2:
+            first, last = runs[0][0], runs[-1][0]
+            if first != last:
+                # cari waktu pindah: jendela pertama pembicara kedua setelah blok pertama
+                t_sw = next(t for (t, r) in fs if lab(r) == last and t > c['start'] + runs[0][1] * MIC_FRAME * 0.5)
+                split.append((c, first, last, t_sw))
+    f = lambda t: f'{int(t//60)}:{t%60:05.2f}'
+    print(f'caption: {len(caps)} | warna beda dengan mic: {len(fix)} | saran pecah: {len(split)} | mic ragu: {len(doubt)}')
+    if fix: print('WARNA BEDA DENGAN MIC (hampir pasti salah):')
+    for c, v, m in fix: print(f"  #{c['idx']} {f(c['start'])} {c['speaker']}->{v} ({m:+.0f} dB) {c['text']}")
+    if split: print('SARAN PECAH (dua pembicara dalam satu caption):')
+    for c, x, y, t in split: print(f"  #{c['idx']} {f(c['start'])} {c['text']!r}: {x} lalu {y} mulai ±{f(t)}")
+    if doubt: print('PERLU DICEK TELINGA (mic tidak tegas: bicara bersamaan/sahutan pendek):')
+    for c, m in doubt: print(f"  #{c['idx']} {f(c['start'])} {c['speaker']} (mic {m:+.0f} dB dari batas) {c['text']}")
+    if a.csv:
+        with open(a.csv, 'w', newline='') as fh:
+            w = csv.writer(fh); w.writerow(['idx', 'waktu', 'warna', 'mic', 'selisih_dB', 'catatan', 'teks'])
+            fx = {c['idx']: v for c, v, m in fix}; spl = {c['idx'] for c, *_ in split}; dbt = {c['idx'] for c, _ in doubt}
+            for c in caps:
+                voiced = [dbm(r[na], r[ho]) for _, r in frames(c) if max(r[na], r[ho]) > thr]
+                m = statistics.median(voiced) if voiced else 0
+                note = 'beda' if c['idx'] in fx else 'pecah?' if c['idx'] in spl else 'ragu' if c['idx'] in dbt else ''
+                w.writerow([c['idx'], f(c['start']), c['speaker'], 'A' if m > a.db / 2 else 'B' if m < -a.db / 2 else '?', round(m, 1), note, c['text']])
+        print('csv QC ->', a.csv)
     if a.plan:
         dp = os.path.splitext(a.plan)[0] + '_dump.json'
         cmd_dump(argparse.Namespace(project=a.project, out=dp, text=None))
-        json.dump({'dump': dp, 'captions': {str(c['idx']): [f"{mic}|{c['text']}"] for c, mic, x in rows}},
+        json.dump({'dump': dp, 'captions': {str(c['idx']): [f"{v}|{c['text']}"] for c, v, m in fix}},
                   open(a.plan, 'w'), ensure_ascii=False, indent=1)
         print('plan warna ->', a.plan, '(periksa dulu, lalu: apply PROYEK PLAN)')
 
@@ -832,7 +906,7 @@ def main():
     p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_boxes)
     p = sp.add_parser('overlay'); p.add_argument('project'); p.add_argument('--file'); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_overlay)
     p = sp.add_parser('mics'); p.add_argument('project'); p.add_argument('--db', type=float, default=6); p.add_argument('--mix', type=int)
-    p.add_argument('--plan'); p.set_defaults(f=cmd_mics)
+    p.add_argument('--plan'); p.add_argument('--csv'); p.set_defaults(f=cmd_mics)
     p = sp.add_parser('audiotrack'); p.add_argument('project'); p.add_argument('--index', type=int); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_audiotrack)
     p = sp.add_parser('split'); p.add_argument('project'); p.add_argument('video'); p.add_argument('outdir'); p.add_argument('--name'); p.set_defaults(f=cmd_split)
     a = ap.parse_args(); a.f(a)

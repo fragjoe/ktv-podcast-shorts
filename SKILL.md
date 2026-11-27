@@ -12,7 +12,7 @@ caption, text box + klik mouse di awal tiap short, watermark sepanjang tiap shor
 hasil export jadi satu file per short.
 
 Permintaan "kerjakan podcast minggu ini, proyek X" = seluruh paket: langkah 1–4 (caption),
-lalu 7 (box, klik, watermark), dan `audiotrack` (1b) bila sumber punya beberapa track audio. Setelah pengguna export: langkah 8 (potong).
+lalu 7 (box, klik, watermark), dengan `mics` + `audiotrack` (1b) sejak awal. Setelah pengguna export: langkah 8 (potong).
 
 Gaya rumah (warna, penggalan, filler, ejaan) ada di `references/gaya-caption.md`. **Baca file itu
 sebelum menyusun plan.** Isinya dipelajari dari revisi final pengguna, dan revisi pengguna
@@ -44,22 +44,31 @@ python3 $S status <proyek>      # klip video, gaya, batas lebar, CapCut jalan/ti
 ```
 Konfirmasi ke pengguna proyek mana yang dimaksud bila ada keraguan (nama folder biasanya tanggal, mis. `MMDD`).
 
-### 1b. Track audio sumber (mic terpisah)
-File sumber bisa berisi lebih dari satu track audio: biasanya 3 = mic narasumber, mic host,
-dan audio gabungan (hanya untuk render).
+### 1b. Track audio sumber (mic terpisah) — wajib dicek
+Mulai sekarang setiap file short berisi beberapa track audio: biasanya 3 = mic narasumber,
+mic host, dan audio gabungan (hanya untuk render). Mic dipakai untuk **menentukan warna
+caption**; QC akhir tetap oleh pengguna.
 ```
-python3 $S mics <proyek> [--plan plan_mics.json]   # kenali track tiap mic + caption yang warnanya beda dengan mic
-python3 $S audiotrack <proyek>                    # dry-run: semua klip pakai track gabungan, lalu --write
+python3 $S mics <proyek> --csv mics.csv          # track tiap mic + warna/pecah/ragu per caption
+python3 $S audiotrack <proyek>                  # dry-run: semua klip pakai track gabungan, lalu --write
 ```
-- `mics` menentukan track dari isi suara (keras saat caption A vs B), **bukan dari label**:
-  label di file bisa tertukar (episode Tsamara: "HOST" ternyata mic narasumber).
-- Tepat 3 track: gabungan = track sisanya, langsung pakai untuk render. **Lebih dari 3 track:
-  selalu tanyakan ke pengguna track mana untuk render** (`audiotrack --index N`, `mics --mix N`).
-- Setiap klip baru defaultnya memakai track 1 saja, jadi `audiotrack` wajib dijalankan
-  sebelum pengguna export.
-- Warna yang beda dengan mic (selisih > 6 dB) hampir pasti salah; laporkan dan, setelah
-  pengguna setuju, terapkan `plan_mics.json` dengan `apply`. Selisih kecil = bicara bersamaan,
-  biarkan dan tandai "perlu dicek".
+- `mics` mengenali track dari isi suara, **bukan dari label** (label bisa tertukar; episode
+  Tsamara: "HOST" ternyata mic narasumber). Gabungan = track yang paling mirip jumlah track
+  lain; narasumber = mic yang paling lama dominan. Bila warna caption yang ada berlawanan
+  dengan itu, skrip memberi PERINGATAN: tanyakan ke pengguna.
+- Tepat 3 track: langsung pakai gabungan untuk render. **Lebih dari 3 track (atau bukan 2 mic +
+  1 gabungan): selalu tanyakan ke pengguna** track mana untuk render (`--mix N` / `--index N`).
+- Klip yang belum diatur memakai track 1 saja, jadi `audiotrack --write` wajib sebelum export.
+- Cara pakai saat menyusun plan (langkah 3): kolom `mic` di `mics.csv` jadi penentu utama
+  warna; isi ucapan hanya untuk caption yang mic-nya `?`. Setelah `apply`, jalankan `mics`
+  lagi dan pastikan "warna beda dengan mic" = 0 (atau pakai `--plan plan_mics.json` lalu `apply`).
+- Laporan `mics` punya tiga daftar untuk QC pengguna:
+  - **WARNA BEDA** (selisih mentah > 6 dB): hampir pasti salah, perbaiki.
+  - **SARAN PECAH**: dua pembicara berurutan dalam satu caption. Sering hanya sahutan "hmm"
+    host di tengah penjelasan (tidak dicaption); pecah hanya bila lawan bicara mengucapkan kata.
+  - **PERLU DICEK TELINGA**: mic tidak tegas (bicara bersamaan, sahutan satu kata).
+- Hasil uji di Tsamara: warna dari mic cocok 99% dengan QC pengguna. Yang tetap butuh telinga:
+  sahutan satu kata dan titik pecah yang tepat.
 
 ### 2. Ambil caption dan transkripsi pembanding
 ```
@@ -93,8 +102,8 @@ Plan adalah JSON yang menyebut caption mana yang diubah, nomor = `idx` dari dump
 Yang dipertimbangkan per caption (detail di `references/gaya-caption.md`):
 1. Typo/ejaan/istilah — bandingkan dengan transkrip Whisper.
 2. Pembicara — tentukan dari isi: pertanyaan dan sahutan host = B, penjelasan narasumber = A.
-   Bila file sumber punya track audio per mic (lihat 1b), pakai `mics` untuk mencocokkan warna
-   dengan mic yang paling keras; bila hanya satu track, tebak dari isi.
+   Pakai kolom `mic` dari `mics.csv` (langkah 1b); tebak dari isi hanya bila mic `?`
+   atau sumber hanya punya satu track audio.
    Sahutan pendek sering salah tebak: masukkan ke daftar "perlu dicek".
 3. Penggalan 1–4 kata di jeda bicara; setiap ganti pembicara = caption baru.
 4. Filler pembuka dibuang, kata lisan bermakna dipertahankan.
@@ -164,8 +173,9 @@ Hasil `<nama> - 01.mp4` … tepat di batas frame tiap klip (codec mengikuti expo
 ## Laporan ke pengguna
 Bahasa Indonesia, ringkas, berisi:
 - Apa yang berubah (jumlah caption sebelum → sesudah per klip, contoh penggalan, typo diperbaiki).
-- Tabel "perlu dicek": waktu (mm:ss), teks, warna yang dipilih, alasan ragu — terutama pembicara
-  dan potongan berwaktu "proporsi".
+- Tabel "perlu dicek" untuk QC akhir pengguna: waktu (mm:ss), teks, warna yang dipilih, alasan
+  ragu — gabungkan tiga daftar `mics` (beda/pecah/ragu) dengan potongan berwaktu "proporsi".
+- Track mana narasumber/host/gabungan, dan bahwa semua klip sudah memakai track gabungan.
 - Lokasi backup dan apa yang belum diverifikasi (mis. belum di-export).
 Buat juga CSV pembicara bila pengguna ingin mengecek di spreadsheet.
 
