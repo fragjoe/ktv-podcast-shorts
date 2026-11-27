@@ -25,7 +25,7 @@ Lalu di Claude Code cukup minta, misalnya: "cek caption proyek 1120", atau pangg
 |---|---|
 | `SKILL.md` | Alur kerja dan aturan keamanan yang dibaca Claude |
 | `references/gaya-caption.md` | Gaya caption rumah (warna, penggalan, filler, ejaan) |
-| `scripts/capcut_caption.py` | Alat: `find`, `status`, `backup`, `dump`, `words`, `lines`, `calibrate`, `apply`, `compare`, `template-save`, `restyle`, `boxes`, `overlay`, `split` |
+| `scripts/capcut_caption.py` | Alat: `find`, `status`, `backup`, `dump`, `words`, `lines`, `calibrate`, `apply`, `compare`, `template-save`, `restyle`, `boxes`, `overlay`, `split`, `mics`, `audiotrack` |
 | `templates/kpods.json` | Gaya caption, box PNG (crop, posisi, keyframe), klik mouse, watermark — diambil dengan `template-save` |
 | `calibration.json` | Batas lebar 1 baris per gaya font/ukuran/kanvas |
 

@@ -687,6 +687,96 @@ def cmd_overlay(a):
     if not a.write: print('(dry-run: tambahkan --write)'); return
     write_draft(P, d)
 
+def audio_streams(path):
+    pr = json.loads(subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'a', '-show_entries',
+                                    'stream=index:stream_tags=handler_name,title', '-of', 'json', path],
+                                   capture_output=True, text=True).stdout)
+    return [(s.get('tags') or {}).get('handler_name') or (s.get('tags') or {}).get('title') or f'a{i+1}'
+            for i, s in enumerate(pr.get('streams', []))]
+
+def stream_pcm(path, i, src, dur):
+    raw = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(src), '-t', str(dur), '-i', path, '-map', f'0:a:{i}',
+                          '-ac', '1', '-ar', '8000', '-f', 's16le', '-'], capture_output=True).stdout
+    import array
+    return array.array('h', raw[:len(raw) // 2 * 2])
+
+def cmd_mics(a):
+    """Kenali track audio per mic (narasumber/host/gabungan) dan cek warna caption terhadap mic yang paling keras."""
+    import math, statistics
+    P = proj_path(a.project); d = load_draft(P); clips = main_clips(d); mi = mat_index(d)
+    segs, mats = text_segments(d); colors = {v: k for k, v in DEFAULT_COLORS.items()}; caps = []
+    for i, sg in enumerate(segs, 1):
+        c = json.loads(mats[sg['material_id']]['content']); st = sg['target_timerange']['start'] / 1e6
+        caps.append(dict(idx=i, start=st, end=st + sg['target_timerange']['duration'] / 1e6, text=c['text'],
+                         speaker=colors.get(rgb2hex(c['styles'][0]['fill']['content']['solid']['color']), '?')))
+    names = None; E = []  # (caption, [rms per stream])
+    for k, c in enumerate(clips, 1):
+        path = mi[c['material_id']][1]['path']; st = audio_streams(path)
+        if names is None: names = st
+        if len(st) != len(names): die(f'klip {k} punya {len(st)} track audio, klip 1 punya {len(names)}')
+        if len(st) < 2: die(f'klip {k} hanya punya {len(st)} track audio; tidak bisa dipisah per mic')
+        src, t0, dur = c['source_timerange']['start'] / 1e6, c['target_timerange']['start'] / 1e6, c['target_timerange']['duration'] / 1e6
+        pcm = [stream_pcm(path, i, src, dur) for i in range(len(st))]
+        for cap in caps:
+            if not (t0 <= cap['start'] < t0 + dur): continue
+            s0, s1 = int((cap['start'] - t0) * 8000), int((cap['end'] - t0) * 8000)
+            r = []
+            for x in pcm:
+                seg = x[s0:s1:2] or [0]
+                r.append(math.sqrt(sum(v * v for v in seg) / len(seg)))
+            E.append((cap, r))
+    n = len(names)
+    print('track audio di sumber:', ', '.join(f'{i+1}={nm}' for i, nm in enumerate(names)))
+    if n > 3 and not a.mix: die('lebih dari 3 track audio: tanyakan ke pengguna track mana untuk render, lalu ulangi dengan --mix N')
+    db = lambda p, q: 20 * math.log10((p + 1) / (q + 1))
+    # skor tiap track: seberapa jauh lebih keras saat caption A dibanding saat caption B
+    score = []
+    for i in range(n):
+        A = [r[i] for c, r in E if c['speaker'] == 'A'] or [0]; B = [r[i] for c, r in E if c['speaker'] == 'B'] or [0]
+        score.append(db(statistics.median(A), statistics.median(B)))
+    na, ho = max(range(n), key=lambda i: score[i]), min(range(n), key=lambda i: score[i])
+    rest = [i for i in range(n) if i not in (na, ho)]
+    mix = a.mix - 1 if a.mix else (rest[0] if len(rest) == 1 else None)
+    print(f'narasumber (A) = track {na+1} "{names[na]}" | host (B) = track {ho+1} "{names[ho]}"'
+          + (f' | gabungan untuk render = track {mix+1} "{names[mix]}"' if mix is not None else ''))
+    for i, nm in ((na, 'narasumber'), (ho, 'host')):
+        if nm[0] != names[i][0].lower() and names[i][0].lower() in 'hn': print(f'  catatan: label "{names[i]}" di file tidak sesuai isi (terdengar {nm})')
+    rows = []
+    for c, r in E:
+        x = db(r[na], r[ho]); mic = 'A' if x > a.db else 'B' if x < -a.db else '?'
+        if mic != '?' and mic != c['speaker']: rows.append((c, mic, x))
+    print(f'caption: {len(E)} | warna beda dengan mic (selisih > {a.db:g} dB): {len(rows)}')
+    for c, mic, x in rows:
+        print(f"  #{c['idx']} {int(c['start']//60)}:{c['start']%60:05.2f} {c['speaker']}->{mic} ({x:+.0f} dB) {c['text']}")
+    if a.plan:
+        dp = os.path.splitext(a.plan)[0] + '_dump.json'
+        cmd_dump(argparse.Namespace(project=a.project, out=dp, text=None))
+        json.dump({'dump': dp, 'captions': {str(c['idx']): [f"{mic}|{c['text']}"] for c, mic, x in rows}},
+                  open(a.plan, 'w'), ensure_ascii=False, indent=1)
+        print('plan warna ->', a.plan, '(periksa dulu, lalu: apply PROYEK PLAN)')
+
+def cmd_audiotrack(a):
+    """Set semua klip utama memakai track audio N dari file sumber (mis. track gabungan untuk render)."""
+    P = proj_path(a.project); d = load_draft(P); clips = main_clips(d); mi = mat_index(d)
+    L = d['materials'].setdefault('audio_track_indexes', [])
+    for k, c in enumerate(clips, 1):
+        st = audio_streams(mi[c['material_id']][1]['path'])
+        if len(st) > 3 and not a.index: die(f'klip {k} punya {len(st)} track audio ({", ".join(st)}): tanyakan ke pengguna, lalu --index N')
+        N = a.index or len(st)
+        if N > len(st): die(f'klip {k} hanya punya {len(st)} track audio')
+        cur = [mi[r][1] for r in c['extra_material_refs'] if r in mi and mi[r][0] == 'audio_track_indexes']
+        if cur:
+            if cur[0]['audio_track_index'] == N: print(f'klip {k}: sudah track {N} ({st[N-1]})'); continue
+            cur[0]['audio_track_index'] = N
+        else:
+            m = dict(id=nid(), type='audio_track_index', audio_track_index=N, default_audio_track_index=1)
+            L.append(m); refs = c['extra_material_refs']
+            j = next((i for i, r in enumerate(refs) if mi.get(r, ('',))[0] == 'vocal_separations'), len(refs))
+            refs.insert(j, m['id'])
+        print(f'klip {k}: track audio {N} ({st[N-1]})')
+    if not a.write: print('(dry-run: tambahkan --write)'); return
+    write_draft(P, d)
+
 def fix_render_index(d):
     for i, t in enumerate(d['tracks']):
         if t['type'] in ('video', 'audio'):
@@ -741,6 +831,9 @@ def main():
     p = sp.add_parser('boxes'); p.add_argument('project'); p.add_argument('boxdir'); p.add_argument('--no-click', action='store_true')
     p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_boxes)
     p = sp.add_parser('overlay'); p.add_argument('project'); p.add_argument('--file'); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_overlay)
+    p = sp.add_parser('mics'); p.add_argument('project'); p.add_argument('--db', type=float, default=6); p.add_argument('--mix', type=int)
+    p.add_argument('--plan'); p.set_defaults(f=cmd_mics)
+    p = sp.add_parser('audiotrack'); p.add_argument('project'); p.add_argument('--index', type=int); p.add_argument('--write', action='store_true'); p.set_defaults(f=cmd_audiotrack)
     p = sp.add_parser('split'); p.add_argument('project'); p.add_argument('video'); p.add_argument('outdir'); p.add_argument('--name'); p.set_defaults(f=cmd_split)
     a = ap.parse_args(); a.f(a)
 

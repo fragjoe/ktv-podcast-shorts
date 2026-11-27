@@ -12,7 +12,7 @@ caption, text box + klik mouse di awal tiap short, watermark sepanjang tiap shor
 hasil export jadi satu file per short.
 
 Permintaan "kerjakan podcast minggu ini, proyek X" = seluruh paket: langkah 1–4 (caption),
-lalu 7 (box, klik, watermark). Setelah pengguna export: langkah 8 (potong).
+lalu 7 (box, klik, watermark), dan `audiotrack` (1b) bila sumber punya beberapa track audio. Setelah pengguna export: langkah 8 (potong).
 
 Gaya rumah (warna, penggalan, filler, ejaan) ada di `references/gaya-caption.md`. **Baca file itu
 sebelum menyusun plan.** Isinya dipelajari dari revisi final pengguna, dan revisi pengguna
@@ -43,6 +43,23 @@ python3 $S find                 # proyek terbaru
 python3 $S status <proyek>      # klip video, gaya, batas lebar, CapCut jalan/tidak
 ```
 Konfirmasi ke pengguna proyek mana yang dimaksud bila ada keraguan (nama folder biasanya tanggal, mis. `MMDD`).
+
+### 1b. Track audio sumber (mic terpisah)
+File sumber bisa berisi lebih dari satu track audio: biasanya 3 = mic narasumber, mic host,
+dan audio gabungan (hanya untuk render).
+```
+python3 $S mics <proyek> [--plan plan_mics.json]   # kenali track tiap mic + caption yang warnanya beda dengan mic
+python3 $S audiotrack <proyek>                    # dry-run: semua klip pakai track gabungan, lalu --write
+```
+- `mics` menentukan track dari isi suara (keras saat caption A vs B), **bukan dari label**:
+  label di file bisa tertukar (episode Tsamara: "HOST" ternyata mic narasumber).
+- Tepat 3 track: gabungan = track sisanya, langsung pakai untuk render. **Lebih dari 3 track:
+  selalu tanyakan ke pengguna track mana untuk render** (`audiotrack --index N`, `mics --mix N`).
+- Setiap klip baru defaultnya memakai track 1 saja, jadi `audiotrack` wajib dijalankan
+  sebelum pengguna export.
+- Warna yang beda dengan mic (selisih > 6 dB) hampir pasti salah; laporkan dan, setelah
+  pengguna setuju, terapkan `plan_mics.json` dengan `apply`. Selisih kecil = bicara bersamaan,
+  biarkan dan tandai "perlu dicek".
 
 ### 2. Ambil caption dan transkripsi pembanding
 ```
@@ -76,7 +93,8 @@ Plan adalah JSON yang menyebut caption mana yang diubah, nomor = `idx` dari dump
 Yang dipertimbangkan per caption (detail di `references/gaya-caption.md`):
 1. Typo/ejaan/istilah — bandingkan dengan transkrip Whisper.
 2. Pembicara — tentukan dari isi: pertanyaan dan sahutan host = B, penjelasan narasumber = A.
-   Audio podcast biasanya mono/identik L-R, jadi tidak bisa dipisah per mic.
+   Bila file sumber punya track audio per mic (lihat 1b), pakai `mics` untuk mencocokkan warna
+   dengan mic yang paling keras; bila hanya satu track, tebak dari isi.
    Sahutan pendek sering salah tebak: masukkan ke daftar "perlu dicek".
 3. Penggalan 1–4 kata di jeda bicara; setiap ganti pembicara = caption baru.
 4. Filler pembuka dibuang, kata lisan bermakna dipertahankan.
@@ -152,8 +170,8 @@ Bahasa Indonesia, ringkas, berisi:
 Buat juga CSV pembicara bila pengguna ingin mengecek di spreadsheet.
 
 ## Batasan yang perlu disampaikan bila relevan
-- Pembicara ditebak dari isi ucapan; model pemisah suara (diarization) belum terpasang. Bila
-  pengguna ingin, tawarkan memasang model offline (mis. sherpa-onnx) — perlu izin unduh.
+- Tanpa track mic terpisah, pembicara ditebak dari isi ucapan; model pemisah suara (diarization)
+  belum terpasang. Bila pengguna ingin, tawarkan memasang model offline (mis. sherpa-onnx) — perlu izin unduh.
 - Versi CapCut baru bisa mengubah/mengenkripsi format draft; skrip akan berhenti dengan pesan.
 - Skrip mengharapkan satu track teks dan caption satu gaya per teks.
 - Track video pertama = klip utama; overlay (box, watermark) ada di track video berikutnya.
