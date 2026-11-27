@@ -19,6 +19,10 @@ lain di minggu berikutnya, revisi terbaru yang dipakai: perbarui file ini dengan
 - **Setiap ganti pembicara = caption baru**, walaupun cuma satu kata.
 - Satu kata sendirian boleh kalau memang diucapkan terpisah (mis. "makanya", "terus").
 - Ungkapan/idiom bahasa Inggris tetap utuh dalam satu caption bila muat.
+- Satuan yang dibaca sebagai satu kesatuan jangan dipecah: jenjang + nama bidang
+  ("pas S2 Neuroeconomics"), urutan huruf/angka ("A B C gitu").
+- Penggalan mengikuti frasa yang utuh: "gimana caranya kita / menerima kenyataan" lebih baik
+  daripada "gimana caranya / kita menerima kenyataan".
 
 ## Filler dan sahutan
 - Buang filler pembuka yang tidak bermakna: *oh, nah, hmm, iya* di awal caption
@@ -40,6 +44,12 @@ lain di minggu berikutnya, revisi terbaru yang dipakai: perbarui file ini dengan
 - Kata yang salah dengar diperbaiki dengan mendengarkan, bukan ditebak dari konteks saja;
   kata yang terlewat oleh transkripsi otomatis ditambahkan.
 - "nafas" dibiarkan (pengguna tidak mengubahnya).
+- Istilah asing yang sudah ada padanan serapan baku ditulis versi Indonesianya
+  (mis. aliran filsafat: "stoikisme", bukan "stoicism").
+- Kata Inggris yang diselipkan di tengah kalimat Indonesia sering salah dengar jadi kata
+  Indonesia yang mirip bunyinya ("sampai" untuk "sometimes"); cek dengan mendengarkan.
+- **Jangan menulis ulang** kata yang tidak jelas jadi kata lain yang "masuk akal": pengguna
+  mengembalikan ke ucapan aslinya. Bila tidak yakin, biarkan dan masukkan ke "perlu dicek".
 
 ## Nama orang
 - Host podcast bernama **Tania**; narasumber menyapanya "kak Tania". Transkripsi otomatis sering
@@ -57,3 +67,13 @@ Tebakan dari isi ucapan paling sering meleset di sahutan pendek dan pergantian c
 - Petunjuk berguna: host dan narasumber sering memakai kata ganti berbeda ("saya" vs "aku");
   kalimat tanya umumnya host; narasumber sering menutup penjelasan dengan "kayak gitu kak".
 Selalu tandai sahutan pendek dan pergantian cepat sebagai "perlu dicek".
+
+**Bila sumber punya track mic terpisah**, mic yang paling keras adalah penentu utama (perintah
+`mics`); pengguna menerima hampir semua koreksi warna dari mic (episode Tsamara: 25 dari 26).
+Tambahan dari revisinya:
+- Sahutan pendek di awal caption ("oke", "iya", "ya", "ya gitu") sering milik pembicara
+  sebelumnya, sedangkan sisanya milik pembicara berikutnya → pecah jadi caption tersendiri
+  dengan warna masing-masing ("iya / gitu karena …", "ya / ya kayaknya …").
+- Kata penyambung di ujung kalimat ("kayak") bisa milik pembicara lain yang memotong; pecah di situ.
+- Caption satu kata yang sangat pendek (< 0,3 dtk) bisa diputuskan pengguna berbeda dari mic
+  karena suara tumpang tindih; laporkan saja, jangan paksa.
